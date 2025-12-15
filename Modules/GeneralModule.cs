@@ -1,5 +1,7 @@
+using System.Text;
 using Discord;
 using Discord.Interactions;
+using Discord.WebSocket;
 
 namespace MyDiscordBot.Modules;
 

@@ -30,34 +30,45 @@ public class BotWorker : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        // 1. Obtener Token
+        // Prioridad: Variable de entorno > appsettings.Development.json > appsettings.json
         var token = _config["Discord:Token"];
         if (string.IsNullOrEmpty(token))
-            throw new Exception("Token no configurado en appsettings.json");
+            throw new Exception("❌ Token no configurado. Revisa appsettings.Development.json");
 
+        // 2. Cargar Módulos (IMPORTANTE: Hacerlo aquí, no en OnReady)
+        // Al hacerlo en StartAsync, aseguramos que se carguen solo una vez.
+        // Si lo pones en OnReady, al reconectarse el bot, intentará cargarlos de nuevo y fallará.
+        await _interactions.AddModulesAsync(Assembly.GetEntryAssembly(), _services);
+        _logger.LogInformation("✅ Módulos de comandos cargados en memoria.");
+
+        // 3. Hooks de eventos
         _client.Log += LogAsync;
         _interactions.Log += LogAsync;
         _client.Ready += OnReadyAsync;
         _client.InteractionCreated += HandleInteraction;
 
+        // 4. Login y Conexión
         await _client.LoginAsync(TokenType.Bot, token);
         await _client.StartAsync();
     }
 
     private async Task OnReadyAsync()
     {
-        await _interactions.AddModulesAsync(Assembly.GetEntryAssembly(), _services);
-
+        // ID del servidor de pruebas para desarrollo rápido
         var guildIdStr = _config["Discord:TestGuildId"];
 
         if (ulong.TryParse(guildIdStr, out ulong guildId))
         {
+            // Registro INSTANTÁNEO (Solo en este servidor)
             await _interactions.RegisterCommandsToGuildAsync(guildId);
-            _logger.LogInformation($"Comandos registrados en Guild ID: {guildId}");
+            _logger.LogInformation($"🚀 Comandos registrados EXITOSAMENTE en Guild ID: {guildId}");
         }
         else
         {
+            // Registro GLOBAL (Tarda ~1 hora en propagarse)
             _logger.LogWarning(
-                "No se encontró TestGuildId en config. Registrando globalmente (lento)..."
+                "⚠️ 'TestGuildId' no encontrado o inválido. Usando registro GLOBAL (Lento: ~1 hora)."
             );
             await _interactions.RegisterCommandsGloballyAsync();
         }
@@ -73,12 +84,21 @@ public class BotWorker : IHostedService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error al ejecutar comando");
+
+            // Intentar notificar al usuario si el comando falló
+            if (interaction.Type == InteractionType.ApplicationCommand)
+            {
+                var msg = "Hubo un error interno al ejecutar el comando.";
+                if (interaction.HasResponded)
+                    await interaction.FollowupAsync(msg, ephemeral: true);
+                else
+                    await interaction.RespondAsync(msg, ephemeral: true);
+            }
         }
     }
 
     private Task LogAsync(LogMessage log)
     {
-        // Mapeo de severidad de log de Discord a Microsoft Extensions Logging
         switch (log.Severity)
         {
             case LogSeverity.Critical:

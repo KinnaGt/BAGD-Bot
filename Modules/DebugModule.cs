@@ -36,7 +36,8 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
             "Intermedio",
             "Intermedio",
             "Veterano"
-        }; // 50% Jr
+        };
+
         string[] horarios =
         {
             "Noche",
@@ -65,7 +66,7 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
             "Produccion"
         };
 
-        for (int i = 0; i < 300; i++)
+        for (int i = 0; i < 49; i++)
         {
             // Generar roles (1 a 2 roles por persona)
             int roleCount = random.Next(1, 3);

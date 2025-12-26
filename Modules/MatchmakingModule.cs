@@ -17,10 +17,11 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
         _dbFactory = dbFactory;
     }
 
-    [SlashCommand("armar_grupos", "Genera grupos balanceados")]
+    [SlashCommand("armar_grupos", "Genera grupos, guarda en DB y exporta CSV + Markdown")]
     [RequireUserPermission(GuildPermission.Administrator)]
     public async Task Matchmaking()
     {
+        // Validación defensiva extra
         if (Context.User is SocketGuildUser user && !user.GuildPermissions.Administrator)
         {
             await RespondAsync("⛔ Acceso denegado: Solo administradores.", ephemeral: true);
@@ -31,9 +32,11 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
         using var db = await _dbFactory.CreateDbContextAsync();
 
-        var soloUsers = await db
-            .Registrations.Where(u => u.TipoParticipacion.Contains("Solo"))
-            .ToListAsync();
+        // 1. Limpieza inicial: Resetear asignaciones previas
+        var allUsers = await db.Registrations.ToListAsync();
+        allUsers.ForEach(u => u.GroupId = null);
+
+        var soloUsers = allUsers.Where(u => u.TipoParticipacion.Contains("Solo")).ToList();
 
         if (soloUsers.Count == 0)
         {
@@ -41,39 +44,45 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
             return;
         }
 
-        // 1. Separar Full Time (Comodines) de los Restringidos
+        // Lógica de separación (Full Time vs Resto)
         var fullTimeUsers = soloUsers
             .Where(u => u.Disponibilidad.Equals("Full Time", StringComparison.OrdinalIgnoreCase))
             .ToList();
-
         var restrictedUsers = soloUsers
             .Where(u => !u.Disponibilidad.Equals("Full Time", StringComparison.OrdinalIgnoreCase))
             .ToList();
-
-        // 2. Agrupar restringidos por su franja
         var buckets = restrictedUsers.GroupBy(u => u.Disponibilidad).ToList();
         var usedFullTimeIds = new HashSet<int>();
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"# REPORTE DE MATCHMAKING - {DateTime.Now:g}");
-        sb.AppendLine($"Total Candidatos: {soloUsers.Count}");
-        sb.AppendLine($"- Restringidos: {restrictedUsers.Count}");
-        sb.AppendLine($"- Full Time (Comodines): {fullTimeUsers.Count}\n");
+        int globalGroupCounter = 1;
 
-        int globalGroupCounter = 1; // Contador global para numerar grupos
+        // Builders para los archivos de salida
+        var csvBuilder = new StringBuilder();
+        var mdBuilder = new StringBuilder();
 
-        // 3. Procesar Franjas Específicas
+        // Cabeceras
+        csvBuilder.AppendLine(
+            "GroupId,DiscordUsername,DiscordUserId,Roles,Experiencia,Disponibilidad"
+        );
+
+        mdBuilder.AppendLine($"# REPORTE DE MATCHMAKING - {DateTime.Now:g}");
+        mdBuilder.AppendLine($"Total Candidatos: {soloUsers.Count}");
+        mdBuilder.AppendLine($"- Restringidos: {restrictedUsers.Count}");
+        mdBuilder.AppendLine($"- Full Time (Comodines): {fullTimeUsers.Count}\n");
+
+        // --- PROCESAMIENTO ---
+
+        // A. Procesar Franjas Horarias
         foreach (var bucket in buckets)
         {
-            // Pool = Gente de esta franja + Full Times LIBRES
             var availableFullTime = fullTimeUsers
                 .Where(u => !usedFullTimeIds.Contains(u.Id))
                 .ToList();
             var pool = bucket.ToList();
             pool.AddRange(availableFullTime);
 
-            sb.AppendLine($"## 🕒 Franja: {bucket.Key}");
-            sb.AppendLine(
+            mdBuilder.AppendLine($"## 🕒 Franja: {bucket.Key}");
+            mdBuilder.AppendLine(
                 $"   Base: {bucket.Count()} | Comodines Disp: {availableFullTime.Count} | Total Pool: {pool.Count}"
             );
 
@@ -81,44 +90,79 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
             foreach (var group in groups)
             {
+                // Asignar ID Global y Marcar Full Times usados
                 foreach (var member in group)
                 {
+                    member.GroupId = globalGroupCounter;
                     if (
                         member.Disponibilidad.Equals(
                             "Full Time",
                             StringComparison.OrdinalIgnoreCase
                         )
                     )
-                    {
                         usedFullTimeIds.Add(member.Id);
-                    }
                 }
-                sb.AppendLine(FormatGroup(group, globalGroupCounter++));
+
+                // Generar reporte MD para este grupo
+                mdBuilder.AppendLine(FormatGroup(group, globalGroupCounter));
+
+                globalGroupCounter++;
             }
-            sb.AppendLine("--------------------------------------------------");
+            mdBuilder.AppendLine("--------------------------------------------------");
         }
 
-        // 4. Procesar Full Times Sobrantes (Remanentes)
+        // B. Procesar Sobrantes Full Time
         var remainingFullTime = fullTimeUsers.Where(u => !usedFullTimeIds.Contains(u.Id)).ToList();
         if (remainingFullTime.Count > 0)
         {
-            sb.AppendLine($"## 🕒 Franja: Full Time (Sobrantes)");
-            sb.AppendLine($"   Cantidad: {remainingFullTime.Count}");
+            mdBuilder.AppendLine($"## 🕒 Franja: Full Time (Sobrantes)");
+            mdBuilder.AppendLine($"   Cantidad: {remainingFullTime.Count}");
 
             var ftGroups = BuildGroupsForBucket(remainingFullTime);
             foreach (var group in ftGroups)
             {
-                sb.AppendLine(FormatGroup(group, globalGroupCounter++));
+                foreach (var member in group)
+                    member.GroupId = globalGroupCounter;
+
+                mdBuilder.AppendLine(FormatGroup(group, globalGroupCounter));
+                globalGroupCounter++;
             }
         }
+        else
+        {
+            mdBuilder.AppendLine(
+                "## ℹ️ Todos los usuarios Full Time fueron asignados a otros horarios."
+            );
+        }
 
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString()));
-        await Context.Channel.SendFileAsync(
-            stream,
-            "grupos_generados.md",
-            "✅ Matchmaking completado."
+        // 2. GUARDAR CAMBIOS EN DB (Persistencia)
+        await db.SaveChangesAsync();
+
+        // 3. GENERAR CSV (Iteramos sobre los usuarios ya asignados y guardados)
+        // Usamos los datos en memoria 'allUsers' que ya tienen el GroupId actualizado
+        var assignedUsers = allUsers.Where(u => u.GroupId != null).OrderBy(u => u.GroupId).ToList();
+        foreach (var u in assignedUsers)
+        {
+            var cleanRoles = u.Roles.Replace(",", "/").Replace("\n", " ");
+            csvBuilder.AppendLine(
+                $"{u.GroupId},{u.DiscordUsername},{u.DiscordUserId},{cleanRoles},{u.Experiencia},{u.Disponibilidad}"
+            );
+        }
+
+        // 4. ENVIAR ARCHIVOS
+        using var csvStream = new MemoryStream(Encoding.UTF8.GetBytes(csvBuilder.ToString()));
+        using var mdStream = new MemoryStream(Encoding.UTF8.GetBytes(mdBuilder.ToString()));
+
+        var attachments = new List<FileAttachment>
+        {
+            new FileAttachment(csvStream, "matchmaking_final.csv"),
+            new FileAttachment(mdStream, "grupos_generados.md")
+        };
+
+        await Context.Interaction.FollowupWithFilesAsync(
+            attachments,
+            text: $"✅ **Matchmaking Completado**\n- Total Grupos: {globalGroupCounter - 1}\n- Usuarios Asignados: {assignedUsers.Count}\n\nUsa `/generargrupos` para aplicar los cambios en el servidor."
         );
-        await FollowupAsync("Proceso finalizado.");
     }
 
     // --- ALGORITMO CORE ---
@@ -146,17 +190,14 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
         int targetSize = 5;
 
-        // FASE 1: Construcción Greedy
         while (usedIds.Count < pool.Count)
         {
             var currentGroup = new List<Registration>();
 
-            // A. PRIORIDAD ROLES CRÍTICOS
             TryAddMember(currentGroup, audioPool, usedIds);
             TryAddMember(currentGroup, progPool, usedIds);
             TryAddMember(currentGroup, artPool, usedIds);
 
-            // B. BALANCEO DE EXPERIENCIA
             double avgExp = currentGroup.Count > 0 ? currentGroup.Average(GetExpScore) : 0;
 
             if (avgExp > 0 && avgExp < 1.5 && currentGroup.Count < targetSize)
@@ -182,7 +223,6 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
                 }
             }
 
-            // C. RELLENO (FILL)
             while (currentGroup.Count < targetSize)
             {
                 var nextUser = allPool.FirstOrDefault(u => !usedIds.Contains(u.Id));
@@ -198,40 +238,31 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
                 break;
         }
 
-        // FASE 2: Redistribución de Grupos Pequeños (< 3 miembros)
         return RedistributeSmallGroups(groups);
     }
 
     private List<List<Registration>> RedistributeSmallGroups(List<List<Registration>> groups)
     {
-        // Mínimo viable para una Jam: 3 personas (Prog + Arte + Audio/Design)
         const int MIN_GROUP_SIZE = 3;
-
         var validGroups = groups.Where(g => g.Count >= MIN_GROUP_SIZE).ToList();
         var smallGroups = groups.Where(g => g.Count < MIN_GROUP_SIZE).ToList();
 
-        // Si no hay grupos válidos donde redistribuir, devolvemos lo que hay (mejor 2 personas que nada)
         if (validGroups.Count == 0)
             return groups;
 
-        // Aplanar los miembros de los grupos pequeños
         var orphans = smallGroups.SelectMany(g => g).ToList();
-
-        // Repartir huérfanos equitativamente (Round Robin)
         int index = 0;
         foreach (var orphan in orphans)
         {
             validGroups[index].Add(orphan);
-            index = (index + 1) % validGroups.Count; // Ciclar
+            index = (index + 1) % validGroups.Count;
         }
 
         return validGroups;
     }
 
-    private int PrioritySort(Registration u)
-    {
-        return u.Disponibilidad.Equals("Full Time", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-    }
+    private int PrioritySort(Registration u) =>
+        u.Disponibilidad.Equals("Full Time", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
 
     private void TryAddMember(
         List<Registration> group,

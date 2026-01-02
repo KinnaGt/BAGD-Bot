@@ -2,6 +2,7 @@ using System.Reflection;
 using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
+using MyDiscordBot.Services; // Necesario para LevelingService
 
 namespace MyDiscordBot;
 
@@ -12,13 +13,15 @@ public class BotWorker : IHostedService
     private readonly IServiceProvider _services;
     private readonly IConfiguration _config;
     private readonly ILogger<BotWorker> _logger;
+    private readonly LevelingService _leveling; // <--- 1. FALTABA ESTO
 
     public BotWorker(
         DiscordSocketClient client,
         InteractionService interactions,
         IServiceProvider services,
         IConfiguration config,
-        ILogger<BotWorker> logger
+        ILogger<BotWorker> logger,
+        LevelingService leveling // <--- 2. INYECCIÓN
     )
     {
         _client = client;
@@ -26,50 +29,61 @@ public class BotWorker : IHostedService
         _services = services;
         _config = config;
         _logger = logger;
+        _leveling = leveling;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        // 1. Obtener Token
-        // Prioridad: Variable de entorno > appsettings.Development.json > appsettings.json
         var token = _config["Discord:Token"];
         if (string.IsNullOrEmpty(token))
-            throw new Exception("❌ Token no configurado. Revisa appsettings.Development.json");
+            throw new Exception("❌ Token no configurado.");
 
-        // 2. Cargar Módulos (IMPORTANTE: Hacerlo aquí, no en OnReady)
-        // Al hacerlo en StartAsync, aseguramos que se carguen solo una vez.
-        // Si lo pones en OnReady, al reconectarse el bot, intentará cargarlos de nuevo y fallará.
         await _interactions.AddModulesAsync(Assembly.GetEntryAssembly(), _services);
-        _logger.LogInformation("✅ Módulos de comandos cargados en memoria.");
+        _logger.LogInformation("✅ Módulos cargados.");
 
-        // 3. Hooks de eventos
         _client.Log += LogAsync;
         _interactions.Log += LogAsync;
         _client.Ready += OnReadyAsync;
         _client.InteractionCreated += HandleInteraction;
 
-        // 4. Login y Conexión
+        // --- 3. SUSCRIPCIONES FALTANTES (CRÍTICO) ---
+        // Sin esto, el bot ignora los mensajes y la voz para el XP
+        _client.MessageReceived += OnMessageReceived;
+        _client.UserVoiceStateUpdated += OnVoiceStateUpdated;
+        // ---------------------------------------------
+
         await _client.LoginAsync(TokenType.Bot, token);
         await _client.StartAsync();
     }
 
+    // --- 4. HANDLERS QUE FALTABAN ---
+    private async Task OnMessageReceived(SocketMessage msg)
+    {
+        await _leveling.ProcessMessageAsync(msg);
+    }
+
+    private async Task OnVoiceStateUpdated(
+        SocketUser user,
+        SocketVoiceState oldState,
+        SocketVoiceState newState
+    )
+    {
+        await _leveling.ProcessVoiceStateAsync(user, oldState, newState);
+    }
+
+    // --------------------------------
+
     private async Task OnReadyAsync()
     {
-        // ID del servidor de pruebas para desarrollo rápido
         var guildIdStr = _config["Discord:TestGuildId"];
-
         if (ulong.TryParse(guildIdStr, out ulong guildId))
         {
-            // Registro INSTANTÁNEO (Solo en este servidor)
             await _interactions.RegisterCommandsToGuildAsync(guildId);
-            _logger.LogInformation($"🚀 Comandos registrados EXITOSAMENTE en Guild ID: {guildId}");
+            _logger.LogInformation($"🚀 Comandos registrados en: {guildId}");
         }
         else
         {
-            // Registro GLOBAL (Tarda ~1 hora en propagarse)
-            _logger.LogWarning(
-                "⚠️ 'TestGuildId' no encontrado o inválido. Usando registro GLOBAL (Lento: ~1 hora)."
-            );
+            _logger.LogWarning("⚠️ Usando registro GLOBAL (Lento).");
             await _interactions.RegisterCommandsGloballyAsync();
         }
     }
@@ -83,22 +97,15 @@ public class BotWorker : IHostedService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error al ejecutar comando");
-
-            // Intentar notificar al usuario si el comando falló
-            if (interaction.Type == InteractionType.ApplicationCommand)
-            {
-                var msg = "Hubo un error interno al ejecutar el comando.";
-                if (interaction.HasResponded)
-                    await interaction.FollowupAsync(msg, ephemeral: true);
-                else
-                    await interaction.RespondAsync(msg, ephemeral: true);
-            }
+            _logger.LogError(ex, "Error ejecutando comando");
+            if (interaction.Type == InteractionType.ApplicationCommand && !interaction.HasResponded)
+                await interaction.RespondAsync("Error interno.", ephemeral: true);
         }
     }
 
     private Task LogAsync(LogMessage log)
     {
+        // Mapeo simple de logs
         switch (log.Severity)
         {
             case LogSeverity.Critical:

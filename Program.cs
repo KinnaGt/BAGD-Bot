@@ -2,16 +2,21 @@ using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using MyDiscordBot;
 using MyDiscordBot.Data;
+using MyDiscordBot.Services; // Importante para LevelingService
 
 var builder = Host.CreateApplicationBuilder(args);
 
 // Configuración de Discord
 var socketConfig = new DiscordSocketConfig
 {
-    GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.GuildMembers,
+    // FIX: Agregado MessageContent y GuildMessages explícitamente
+    GatewayIntents =
+        GatewayIntents.AllUnprivileged
+        | GatewayIntents.GuildMembers
+        | GatewayIntents.MessageContent
+        | GatewayIntents.GuildMessages,
     AlwaysDownloadUsers = true
 };
 
@@ -21,18 +26,19 @@ builder.Services.AddSingleton(x => new InteractionService(
     x.GetRequiredService<DiscordSocketClient>()
 ));
 
-// ---> FIX: Usamos Factory en lugar de AddDbContext directo
-// Esto permite crear contextos "on-the-fly" dentro de los singletons
+// Base de Datos
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
     options.UseSqlite("Data Source=bagd_jam.db")
 );
 
+// Servicios
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<LevelingService>(); // Singleton para estado de voz
 builder.Services.AddHostedService<BotWorker>();
 
 var host = builder.Build();
 
-// Migración inicial usando la Factory
+// Migración Automática
 using (var scope = host.Services.CreateScope())
 {
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();

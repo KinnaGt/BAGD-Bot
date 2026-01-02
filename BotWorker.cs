@@ -2,7 +2,7 @@ using System.Reflection;
 using Discord;
 using Discord.Interactions;
 using Discord.WebSocket;
-using MyDiscordBot.Services; // Necesario para LevelingService
+using MyDiscordBot.Services;
 
 namespace MyDiscordBot;
 
@@ -13,7 +13,7 @@ public class BotWorker : IHostedService
     private readonly IServiceProvider _services;
     private readonly IConfiguration _config;
     private readonly ILogger<BotWorker> _logger;
-    private readonly LevelingService _leveling; // <--- 1. FALTABA ESTO
+    private readonly LevelingService _leveling;
 
     public BotWorker(
         DiscordSocketClient client,
@@ -21,7 +21,7 @@ public class BotWorker : IHostedService
         IServiceProvider services,
         IConfiguration config,
         ILogger<BotWorker> logger,
-        LevelingService leveling // <--- 2. INYECCIÓN
+        LevelingService leveling
     )
     {
         _client = client;
@@ -46,17 +46,13 @@ public class BotWorker : IHostedService
         _client.Ready += OnReadyAsync;
         _client.InteractionCreated += HandleInteraction;
 
-        // --- 3. SUSCRIPCIONES FALTANTES (CRÍTICO) ---
-        // Sin esto, el bot ignora los mensajes y la voz para el XP
         _client.MessageReceived += OnMessageReceived;
         _client.UserVoiceStateUpdated += OnVoiceStateUpdated;
-        // ---------------------------------------------
 
         await _client.LoginAsync(TokenType.Bot, token);
         await _client.StartAsync();
     }
 
-    // --- 4. HANDLERS QUE FALTABAN ---
     private async Task OnMessageReceived(SocketMessage msg)
     {
         await _leveling.ProcessMessageAsync(msg);
@@ -70,8 +66,6 @@ public class BotWorker : IHostedService
     {
         await _leveling.ProcessVoiceStateAsync(user, oldState, newState);
     }
-
-    // --------------------------------
 
     private async Task OnReadyAsync()
     {

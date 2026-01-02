@@ -1,0 +1,27 @@
+services:
+  bagd-bot:
+    container_name: bagd_bot
+    build: .
+    restart: unless-stopped
+    environment:
+      # Entorno de Producción
+      - DOTNET_ENVIRONMENT=Production
+
+      # Credenciales (Reemplazar con valores reales o usar archivo .env)
+      - Discord__Token=TU_TOKEN_AQUI
+      - Discord__TestGuildId=TU_GUILD_ID_AQUI
+
+      # Cadena de conexión para SQLite dentro del contenedor
+      # Apunta a la carpeta interna que creamos en el Dockerfile y mapeamos en volumes
+      - ConnectionStrings__DefaultConnection=Data Source=/app/storage/bagd_jam.db
+
+    volumes:
+      # Mapeo de Persistencia:
+      # HOST (Tu carpeta 'db_storage') : CONTENEDOR (Ruta interna '/app/storage')
+      # Esto evita conflictos con la carpeta 'Data' del código fuente en Windows/Mac
+      - ./db_storage:/app/storage
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M

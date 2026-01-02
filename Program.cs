@@ -4,14 +4,12 @@ using Discord.WebSocket;
 using Microsoft.EntityFrameworkCore;
 using MyDiscordBot;
 using MyDiscordBot.Data;
-using MyDiscordBot.Services; // Importante para LevelingService
+using MyDiscordBot.Services;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Configuración de Discord
 var socketConfig = new DiscordSocketConfig
 {
-    // FIX: Agregado MessageContent y GuildMessages explícitamente
     GatewayIntents =
         GatewayIntents.AllUnprivileged
         | GatewayIntents.GuildMembers
@@ -26,19 +24,25 @@ builder.Services.AddSingleton(x => new InteractionService(
     x.GetRequiredService<DiscordSocketClient>()
 ));
 
-// Base de Datos
-builder.Services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseSqlite("Data Source=bagd_jam.db")
-);
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
-// Servicios
+if (string.IsNullOrEmpty(connectionString))
+{
+    if (!Directory.Exists("db_storage"))
+    {
+        Directory.CreateDirectory("db_storage");
+    }
+    connectionString = "Data Source=db_storage/bagd_jam.db";
+}
+
+builder.Services.AddDbContextFactory<AppDbContext>(options => options.UseSqlite(connectionString));
+
 builder.Services.AddMemoryCache();
-builder.Services.AddSingleton<LevelingService>(); // Singleton para estado de voz
+builder.Services.AddSingleton<LevelingService>();
 builder.Services.AddHostedService<BotWorker>();
 
 var host = builder.Build();
 
-// Migración Automática
 using (var scope = host.Services.CreateScope())
 {
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();

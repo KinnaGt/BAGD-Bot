@@ -15,7 +15,7 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
         _dbFactory = dbFactory;
     }
 
-    [SlashCommand("seed_db", "ADMIN: Genera 300 usuarios falsos para testear matchmaking")]
+    [SlashCommand("seed_db", "ADMIN: Genera 200 usuarios falsos para testear matchmaking")]
     [RequireUserPermission(GuildPermission.Administrator)]
     public async Task SeedDatabase()
     {
@@ -30,14 +30,10 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
             "Principiante",
             "Principiante",
             "Principiante",
-            "Principiante",
-            "Principiante",
-            "Intermedio",
             "Intermedio",
             "Intermedio",
             "Veterano"
         };
-
         string[] horarios =
         {
             "Noche",
@@ -48,7 +44,7 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
             "Tarde",
             "Mañana",
             "Full Time"
-        }; // Noche/Finde predominante
+        };
 
         // Roles (Permitimos multiclase, pero con peso)
         string[] rolesBase =
@@ -66,7 +62,7 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
             "Produccion"
         };
 
-        for (int i = 0; i < 49; i++)
+        for (int i = 0; i < 200; i++)
         {
             // Generar roles (1 a 2 roles por persona)
             int roleCount = random.Next(1, 3);
@@ -91,7 +87,8 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
 
                 Experiencia = experiencias[random.Next(experiencias.Length)],
                 Roles = string.Join(", ", userRoles),
-                TipoParticipacion = "Solo", // Matchmaking es para gente sola
+                // FIX: Ajustado a "BuscoEquipo" para que el matchmaking los detecte
+                TipoParticipacion = "BuscoEquipo",
                 Disponibilidad = horarios[random.Next(horarios.Length)],
                 ConsentimientoDifusion = true,
                 NecesidadesEspeciales = "Ninguna"
@@ -108,6 +105,8 @@ public class DebugModule : InteractionModuleBase<SocketInteractionContext>
         await db.Registrations.AddRangeAsync(fakeUsers);
         await db.SaveChangesAsync();
 
-        await FollowupAsync($"✅ Base de datos poblada con {fakeUsers.Count} usuarios simulados.");
+        await FollowupAsync(
+            $"✅ Base de datos poblada con {fakeUsers.Count} usuarios simulados (Modo: BuscoEquipo)."
+        );
     }
 }

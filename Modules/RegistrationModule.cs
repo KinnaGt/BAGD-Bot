@@ -36,7 +36,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             return;
         }
 
-        // Paso 1: Identidad (Texto -> Modal es lo mejor para esto)
         await RespondWithModalAsync<IdentityModal>("reg_modal_identity");
     }
 
@@ -80,7 +79,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
 
         _cache.Set($"reg_{Context.User.Id}", data, TimeSpan.FromMinutes(30));
 
-        // Construimos el UI del Paso 2 (Select Menus)
         var embed = new EmbedBuilder()
             .WithTitle("Paso 2/4: Perfil Profesional")
             .WithDescription(
@@ -114,12 +112,25 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             .AddOption("QA / Testing", "QA")
             .AddOption("Producción", "Produccion");
 
-        // Menu 3: Grupo
+        // Menu 3: Modalidad de Participación (ACTUALIZADO)
         var groupMenu = new SelectMenuBuilder()
             .WithCustomId("reg_sel_group")
-            .WithPlaceholder("¿Cómo participas?")
-            .AddOption("Solo (Busco equipo o trabajo solo)", "Solo")
-            .AddOption("Grupo Pre-armado (Ya tengo equipo)", "Grupo");
+            .WithPlaceholder("¿Cómo vas a participar?")
+            .AddOption(
+                "👤 Participar Solo (No busco equipo)",
+                "Solo",
+                "Trabajaré por mi cuenta en el proyecto."
+            )
+            .AddOption(
+                "🤝 Asignación Automática (Busco equipo)",
+                "Busco Equipo",
+                "Quiero que el bot me asigne un grupo,se podes aclarar mas adelante si queres si o si participar con alguien."
+            )
+            .AddOption(
+                "🛡️ Grupo Pre-armado (Ya tengo equipo)",
+                "PreArmado",
+                "Ya tengo mis compañeros definidos."
+            );
 
         // Botón Continuar
         var btn = new ButtonBuilder()
@@ -135,19 +146,17 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
         await RespondAsync(embed: embed, components: builder.Build(), ephemeral: true);
     }
 
-    // --- HANDLERS DE SELECCIÓN PASO 2 (Guardado en Caché al vuelo) ---
+    // --- HANDLERS DE SELECCIÓN PASO 2 ---
 
     [ComponentInteraction("reg_sel_*")]
     public async Task OnSelection(string id, string[] selection)
     {
-        // Recuperamos el objeto
         if (!_cache.TryGetValue($"reg_{Context.User.Id}", out Registration? data) || data == null)
         {
             await RespondAsync("❌ Sesión expirada.", ephemeral: true);
             return;
         }
 
-        // Actualizamos campo según el ID del menú
         var value = string.Join(", ", selection);
 
         switch (id)
@@ -163,15 +172,13 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
                 break;
             case "avail":
                 data.Disponibilidad = value;
-                break; // Usado en paso 3
+                break;
             case "consent":
                 data.ConsentimientoDifusion = selection.Contains("SI");
-                break; // Usado en paso 3
+                break;
         }
 
         _cache.Set($"reg_{Context.User.Id}", data, TimeSpan.FromMinutes(30));
-
-        // Es necesario responder a la interacción de Discord para que no de error
         await DeferAsync();
     }
 
@@ -180,7 +187,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
     [ComponentInteraction("reg_btn_step3")]
     public async Task GoToStep3()
     {
-        // Validación: ¿Eligió todo?
         if (!_cache.TryGetValue($"reg_{Context.User.Id}", out Registration? data) || data == null)
         {
             await RespondAsync("❌ Sesión expirada.", ephemeral: true);
@@ -208,7 +214,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
 
         var builder = new ComponentBuilder();
 
-        // Menu Disponibilidad
         var availMenu = new SelectMenuBuilder()
             .WithCustomId("reg_sel_avail")
             .WithPlaceholder("Franja Horaria y Disponibilidad")
@@ -218,7 +223,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             .AddOption("Part Time - Noche", "Noche")
             .AddOption("Solo Fin de Semana", "Finde");
 
-        // Menu Consentimiento (Simulando Checkbox)
         var consentMenu = new SelectMenuBuilder()
             .WithCustomId("reg_sel_consent")
             .WithPlaceholder("¿Autorizas difusión de tu juego/nombre?")
@@ -234,7 +238,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
         builder.WithSelectMenu(consentMenu);
         builder.WithButton(btn);
 
-        // Actualizamos el mensaje o mandamos uno nuevo? Mandamos nuevo para historial limpio
         await RespondAsync(embed: embed, components: builder.Build(), ephemeral: true);
     }
 
@@ -249,14 +252,12 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             return;
         }
 
-        // Validación paso 3
-        if (string.IsNullOrEmpty(data.Disponibilidad)) // Consentimiento es bool false por defecto, difícil validar si eligió NO o no eligió nada, asumimos NO default.
+        if (string.IsNullOrEmpty(data.Disponibilidad))
         {
             await RespondAsync("⚠️ Selecciona tu disponibilidad.", ephemeral: true);
             return;
         }
 
-        // Abrimos el último modal para texto libre opcional
         await RespondWithModalAsync<SpecialNeedsModal>("reg_modal_final");
     }
 
@@ -273,14 +274,15 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
 
         data.NecesidadesEspeciales = modal.Special ?? "Ninguna";
 
-        // GUARDADO FINAL
         try
         {
             using var db = await _dbFactory.CreateDbContextAsync();
             db.Registrations.Add(data);
             await db.SaveChangesAsync();
             _cache.Remove($"reg_{Context.User.Id}");
-            Console.WriteLine($"[EXITO] Registro completo: {Context.User.Username}");
+            Console.WriteLine(
+                $"[EXITO] Registro completo: {Context.User.Username} ({data.TipoParticipacion})"
+            );
         }
         catch (Exception ex)
         {
@@ -289,7 +291,6 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             return;
         }
 
-        // Asignar Rol
         try
         {
             var user = Context.User as IGuildUser;
@@ -299,20 +300,20 @@ public class RegistrationModule : InteractionModuleBase<SocketInteractionContext
             if (role != null)
                 await user!.AddRoleAsync(role);
         }
-        catch
-        { /* Ignorar error rol */
-        }
+        catch { }
 
         await FollowupAsync(
             embed: new EmbedBuilder()
                 .WithTitle("🎉 ¡Inscripción Completa!")
-                .WithDescription($"Bienvenido a la **{JAM_ROLE_NAME}**.")
+                .WithDescription(
+                    $"Bienvenido a la **{JAM_ROLE_NAME}**.\nModalidad: **{data.TipoParticipacion}**"
+                )
                 .WithColor(Color.Green)
                 .Build()
         );
     }
 
-    // --- MODALES DEFINITION ---
+    // --- MODALES ---
 
     public class IdentityModal : IModal
     {

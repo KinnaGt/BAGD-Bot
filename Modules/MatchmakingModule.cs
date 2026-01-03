@@ -21,7 +21,6 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
     [RequireUserPermission(GuildPermission.Administrator)]
     public async Task Matchmaking()
     {
-        // Validación defensiva extra
         if (Context.User is SocketGuildUser user && !user.GuildPermissions.Administrator)
         {
             await RespondAsync("⛔ Acceso denegado: Solo administradores.", ephemeral: true);
@@ -32,15 +31,21 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
         using var db = await _dbFactory.CreateDbContextAsync();
 
-        // 1. Limpieza inicial: Resetear asignaciones previas
+        // Resetear asignaciones previas
         var allUsers = await db.Registrations.ToListAsync();
         allUsers.ForEach(u => u.GroupId = null);
 
-        var soloUsers = allUsers.Where(u => u.TipoParticipacion.Contains("Solo")).ToList();
+        // FILTRO ACTUALIZADO: Solo usuarios que quieren "Asignación Automática"
+        // Ignoramos "Solo" y "PreArmado"
+        var soloUsers = allUsers
+            .Where(u =>
+                u.TipoParticipacion.Equals("BuscoEquipo", StringComparison.OrdinalIgnoreCase)
+            )
+            .ToList();
 
         if (soloUsers.Count == 0)
         {
-            await FollowupAsync("⚠️ No hay usuarios inscritos como 'Solo'.");
+            await FollowupAsync("⚠️ No hay usuarios inscritos con la opción 'Busco Equipo'.");
             return;
         }
 
@@ -56,17 +61,15 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
         int globalGroupCounter = 1;
 
-        // Builders para los archivos de salida
         var csvBuilder = new StringBuilder();
         var mdBuilder = new StringBuilder();
 
-        // Cabeceras
         csvBuilder.AppendLine(
-            "GroupId,DiscordUsername,DiscordUserId,Roles,Experiencia,Disponibilidad"
+            "GroupId,DiscordUsername,DiscordUserId,Roles,Experiencia,Disponibilidad,TipoParticipacion"
         );
 
         mdBuilder.AppendLine($"# REPORTE DE MATCHMAKING - {DateTime.Now:g}");
-        mdBuilder.AppendLine($"Total Candidatos: {soloUsers.Count}");
+        mdBuilder.AppendLine($"Total Candidatos (BuscoEquipo): {soloUsers.Count}");
         mdBuilder.AppendLine($"- Restringidos: {restrictedUsers.Count}");
         mdBuilder.AppendLine($"- Full Time (Comodines): {fullTimeUsers.Count}\n");
 
@@ -90,7 +93,6 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
             foreach (var group in groups)
             {
-                // Asignar ID Global y Marcar Full Times usados
                 foreach (var member in group)
                 {
                     member.GroupId = globalGroupCounter;
@@ -103,9 +105,7 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
                         usedFullTimeIds.Add(member.Id);
                 }
 
-                // Generar reporte MD para este grupo
                 mdBuilder.AppendLine(FormatGroup(group, globalGroupCounter));
-
                 globalGroupCounter++;
             }
             mdBuilder.AppendLine("--------------------------------------------------");
@@ -135,21 +135,18 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
             );
         }
 
-        // 2. GUARDAR CAMBIOS EN DB (Persistencia)
         await db.SaveChangesAsync();
 
-        // 3. GENERAR CSV (Iteramos sobre los usuarios ya asignados y guardados)
-        // Usamos los datos en memoria 'allUsers' que ya tienen el GroupId actualizado
+        // 3. GENERAR CSV (Incluyendo TipoParticipacion para control)
         var assignedUsers = allUsers.Where(u => u.GroupId != null).OrderBy(u => u.GroupId).ToList();
         foreach (var u in assignedUsers)
         {
             var cleanRoles = u.Roles.Replace(",", "/").Replace("\n", " ");
             csvBuilder.AppendLine(
-                $"{u.GroupId},{u.DiscordUsername},{u.DiscordUserId},{cleanRoles},{u.Experiencia},{u.Disponibilidad}"
+                $"{u.GroupId},{u.DiscordUsername},{u.DiscordUserId},{cleanRoles},{u.Experiencia},{u.Disponibilidad},{u.TipoParticipacion}"
             );
         }
 
-        // 4. ENVIAR ARCHIVOS
         using var csvStream = new MemoryStream(Encoding.UTF8.GetBytes(csvBuilder.ToString()));
         using var mdStream = new MemoryStream(Encoding.UTF8.GetBytes(mdBuilder.ToString()));
 
@@ -161,7 +158,7 @@ public class MatchmakingModule : InteractionModuleBase<SocketInteractionContext>
 
         await Context.Interaction.FollowupWithFilesAsync(
             attachments,
-            text: $"✅ **Matchmaking Completado**\n- Total Grupos: {globalGroupCounter - 1}\n- Usuarios Asignados: {assignedUsers.Count}\n\nUsa `/generargrupos` para aplicar los cambios en el servidor."
+            text: $"✅ **Matchmaking Completado**\n- Total Grupos: {globalGroupCounter - 1}\n- Usuarios Asignados: {assignedUsers.Count}\n- (Los usuarios 'Solo' y 'PreArmado' fueron excluidos del proceso automático)\n\nUsa `/generargrupos` para aplicar los cambios en el servidor."
         );
     }
 
